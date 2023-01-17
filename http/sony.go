@@ -14,21 +14,29 @@ func sonyBreaker(c http.Client) func(http.ResponseWriter, *http.Request) {
 	// configuração do circuit breaker
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        "sony/gobreaker",          // nome do circuit breaker
-		MaxRequests: uint32(halfOpenThreshold), // numero de requests permitidas no estado half-open
+		MaxRequests: uint32(halfOpenThreshold), // numero de requests com sucesso para passar de half-open para closed
 		Interval:    timeout,                   // intervalo em que as contagens são resetadas no estado fechado
-		Timeout:     timeout,                   // tempo de espera para tentar fechar o circuito
+		Timeout:     timeout,                   // tempo de espera para tentar passar de aberto para meio aberto o circuito
 		ReadyToTrip: func(counts gobreaker.Counts) bool { // função que triga a mudança de estado
-			return counts.ConsecutiveFailures > errThreshold
+			// aqui a gente tem acesso ao struct Counts, como estratégia para virar a chave podemos:
+			//  1 - verificar se o número de erros consecutivos ultrapassa um threshold;
+			//  2 - verificar o número total de erros dentro de uma janela de tempo (usando o parâmetro Interval);
+			//  3 - uma combinação de ambas as opções.
+			log.Printf("requests so far: %d\t-\tready to trip check\t-\tConsecutiveFailures %d Vs. %d errThreshold\n", counts.Requests, counts.ConsecutiveFailures, errThreshold)
+			return counts.ConsecutiveFailures > errThreshold || counts.TotalFailures > 300
 		},
 		OnStateChange: func(name string, from, to gobreaker.State) { // função que triga quando o estado muda
-			log.Printf("circuit breaker %s going\n\tfrom: %s\n\tto: %s", name, from, to)
+			log.Printf("\n**********************************************************\n* changing state\t-\tfrom: %s\tto: %s *\n**********************************************************\n", from, to)
+		},
+		IsSuccessful: func(err error) bool { // customiza o que o circuit breaker vai entender como uma requisição de sucesso
+			return err == nil
 		},
 	})
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Println("sony/gobreaker")
 
-		resp, err := cb.Execute(func() (interface{}, error) {
+		_, err := cb.Execute(func() (interface{}, error) {
 			m := ""
 			req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:6060/get", nil)
 			if err != nil {
@@ -49,13 +57,20 @@ func sonyBreaker(c http.Client) func(http.ResponseWriter, *http.Request) {
 			return m, nil
 		})
 
-		log.Printf("current cb state:\ntotal: \t%v\nsuccess: \t%v\nerrors: \t%v\nconsecutive success: \t%v\nconsecutive errors: \t%v\n", cb.Counts().Requests, cb.Counts().TotalSuccesses, cb.Counts().TotalFailures, cb.Counts().ConsecutiveSuccesses, cb.Counts().ConsecutiveFailures)
-
 		if err != nil {
-			log.Printf("something else happened: \n\tbody: %+v\n\terror: %+v\n", resp, err)
-			return
+			switch err {
+			case gobreaker.ErrOpenState:
+				log.Printf("state open error: %v\n", err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			case gobreaker.ErrTooManyRequests:
+				log.Printf("too many requests while half open error: %v\n", err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			default:
+				log.Printf("something else happened: %v\n", err)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 		}
 
-		log.Printf("action completed successfully: \n\t%+v\n", resp)
+		log.Printf("action completed successfully\n")
 	}
 }

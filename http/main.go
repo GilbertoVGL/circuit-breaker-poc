@@ -9,8 +9,8 @@ const (
 	errThreshold      = 5
 	successThreshold  = 5
 	halfOpenThreshold = 5
-	timeout           = time.Duration(10 * time.Second)
-	numberOfRequests  = 1000
+	timeout           = time.Duration(5 * time.Second)
+	waitBetweenStates = time.Duration(4 * time.Second) // dorme esse tempo entre requests com circuit breaker aberto
 )
 
 func main() {

@@ -19,44 +19,39 @@ func goResiliencyBreaker(c http.Client) func(http.ResponseWriter, *http.Request)
 		log.Println("go-resiliency/breaker")
 		m := ""
 
-		i := 0
-
-		for {
-			log.Println("i:", i)
-			result := cb.Run(func() error {
-				req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:6060/get", nil)
-				if err != nil {
-					return err
-				}
-
-				resp, err := c.Do(req)
-				if err != nil {
-					return err
-				}
-				defer resp.Body.Close()
-				json.NewDecoder(resp.Body).Decode(&m)
-
-				if resp.StatusCode >= 400 && resp.StatusCode <= 599 {
-					return errors.New(fmt.Sprintf("request problem: %v", resp.StatusCode))
-				}
-
-				return nil
-			})
-
-			switch result {
-			case nil:
-				log.Printf("action completed successfully: \n\t%+v\n", m)
-			case breaker.ErrBreakerOpen:
-				log.Println("open circuit")
-				go func() {
-					time.Sleep(timeout)
-					log.Println("should be half-open")
-				}()
-			default:
-				log.Printf("something else happened: \n\tbody: %+v\n\terror: %+v\n", m, result)
+		result := cb.Run(func() error {
+			req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:6060/get", nil)
+			if err != nil {
+				return err
 			}
 
-			i++
+			resp, err := c.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			json.NewDecoder(resp.Body).Decode(&m)
+
+			if resp.StatusCode >= 400 && resp.StatusCode <= 599 {
+				return errors.New(fmt.Sprintf("request problem: %v", resp.StatusCode))
+			}
+
+			return nil
+		})
+
+		switch result {
+		case nil:
+			log.Printf("action completed successfully\n")
+		case breaker.ErrBreakerOpen:
+			log.Printf("state open error: %v\n", result)
+			go func() {
+				time.Sleep(timeout)
+				log.Println("circuit should be half-open")
+			}()
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			log.Printf("something else happened: %v\n", result)
+			w.WriteHeader(http.StatusInternalServerError)
 		}
 	}
 }
